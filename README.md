@@ -24,7 +24,7 @@ Run the app locally (see below)
 ### 1. **Clone the repository**
 
 ```bash```
-git clone https://github.com/yourusername/expense-tracker.git
+git clone https://github.com/moriaki666/expense-tracker.git
 cd expense-tracker
 
 ```install dependencies```
