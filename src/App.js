@@ -20,12 +20,12 @@ function getMonth(date) {
   );
 }
 
-function saveToStorage(expenses) {
-  localStorage.setItem("expenses", JSON.stringify(expenses));
+// ---- Multi-tracker storage helpers ----
+function saveProjectsToStorage(projects) {
+  localStorage.setItem("projects", JSON.stringify(projects));
 }
-
-function loadFromStorage() {
-  const data = localStorage.getItem("expenses");
+function loadProjectsFromStorage() {
+  const data = localStorage.getItem("projects");
   if (!data) return [];
   try {
     return JSON.parse(data);
@@ -34,8 +34,18 @@ function loadFromStorage() {
   }
 }
 
+// ---- COMPONENT ----
 export default function App() {
-  const [expenses, setExpenses] = useState(loadFromStorage());
+  // PROJECTS STATE
+  const [projects, setProjects] = useState(loadProjectsFromStorage());
+  const [currentProjectId, setCurrentProjectId] = useState(() =>
+    (JSON.parse(localStorage.getItem("lastProjectId")) || null)
+  );
+  const [newProjectName, setNewProjectName] = useState("");
+  
+  // EXPENSES STATE (linked to current project)
+  const currentProject = projects.find(p => p.id === currentProjectId) || projects[0];
+  const expenses = currentProject ? currentProject.expenses : [];
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState(categories[0]);
   const [description, setDescription] = useState("");
@@ -45,15 +55,52 @@ export default function App() {
   const [selectedMonth, setSelectedMonth] = useState(getMonth(new Date()));
   const [editingIndex, setEditingIndex] = useState(-1);
 
-  // Save to localStorage whenever expenses change
+  // SAVE PROJECTS whenever they change
   useEffect(() => {
-    saveToStorage(expenses);
-  }, [expenses]);
+    saveProjectsToStorage(projects);
+    if (currentProjectId) {
+      localStorage.setItem("lastProjectId", JSON.stringify(currentProjectId));
+    }
+  }, [projects, currentProjectId]);
 
-  // Add or Edit expense handler
+  // ADD A NEW PROJECT/TRACKER
+  function addProject(e) {
+    e.preventDefault();
+    if (!newProjectName.trim()) return;
+    const id = `proj-${Date.now()}`;
+    const newProject = {
+      id,
+      name: newProjectName.trim(),
+      expenses: [],
+    };
+    setProjects([newProject, ...projects]);
+    setCurrentProjectId(id);
+    setNewProjectName("");
+  }
+
+  // DELETE A PROJECT/TRACKER
+  function deleteProject(id) {
+    if (!window.confirm("Delete this tracker and all its expenses?")) return;
+    const idx = projects.findIndex(p => p.id === id);
+    const newList = projects.filter(p => p.id !== id);
+    setProjects(newList);
+    // If deleted was current, pick another project (or none)
+    if (currentProjectId === id) {
+      setCurrentProjectId(newList[0]?.id || null);
+    }
+  }
+
+  // RENAME PROJECT/TRACKER
+  function renameProject(id, newName) {
+    setProjects(projects.map(p =>
+      p.id === id ? { ...p, name: newName } : p
+    ));
+  }
+
+  // ADD or EDIT expense for the current tracker
   const addOrEditExpense = (e) => {
     e.preventDefault();
-    if (!amount || isNaN(amount)) return;
+    if (!amount || isNaN(amount) || !currentProject) return;
 
     const exp = {
       amount: parseFloat(amount),
@@ -61,19 +108,23 @@ export default function App() {
       description,
       date,
     };
-
-    if (editingIndex >= 0) {
-      const updated = [...expenses];
-      updated[editingIndex] = exp;
-      setExpenses(updated);
-      setEditingIndex(-1);
-    } else {
-      setExpenses([...expenses, exp]);
-    }
+    const updatedProjects = projects.map(p => {
+      if (p.id !== currentProject.id) return p;
+      let newExpenses;
+      if (editingIndex >= 0) {
+        newExpenses = [...p.expenses];
+        newExpenses[editingIndex] = exp;
+      } else {
+        newExpenses = [...p.expenses, exp];
+      }
+      return { ...p, expenses: newExpenses };
+    });
+    setProjects(updatedProjects);
     setAmount("");
     setCategory(categories[0]);
     setDescription("");
     setDate(new Date().toISOString().slice(0, 10));
+    setEditingIndex(-1);
   };
 
   // Start editing an expense
@@ -88,28 +139,29 @@ export default function App() {
 
   // Delete an expense
   const deleteExpense = (i) => {
-    if (window.confirm("Delete this expense?")) {
-      const updated = [...expenses];
-      updated.splice(i, 1);
-      setExpenses(updated);
-      if (editingIndex === i) setEditingIndex(-1);
-    }
+    if (!currentProject) return;
+    if (!window.confirm("Delete this expense?")) return;
+    const updatedProjects = projects.map(p => {
+      if (p.id !== currentProject.id) return p;
+      const newExpenses = [...p.expenses];
+      newExpenses.splice(i, 1);
+      return { ...p, expenses: newExpenses };
+    });
+    setProjects(updatedProjects);
+    if (editingIndex === i) setEditingIndex(-1);
   };
 
+  // Import/Export for each tracker
   // Import CSV
   const importCSV = (event) => {
     const file = event.target.files[0];
-    if (!file) return;
+    if (!file || !currentProject) return;
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target.result;
-      // Split into lines
       const lines = text.trim().split("\n");
-      // Remove header
       lines.shift();
-      // Parse each line
       const imported = lines.map((line) => {
-        // Handle commas in description or category
         const regex = /(".*?"|[^",\s]+)(?=\s*,|\s*$)/g;
         const items = line
           .match(regex)
@@ -121,7 +173,9 @@ export default function App() {
           date: items[3],
         };
       });
-      setExpenses(imported);
+      setProjects(projects.map(p =>
+        p.id === currentProject.id ? { ...p, expenses: imported } : p
+      ));
       event.target.value = "";
     };
     reader.readAsText(file);
@@ -130,14 +184,15 @@ export default function App() {
   // Import JSON
   const importJSON = (event) => {
     const file = event.target.files[0];
-    if (!file) return;
+    if (!file || !currentProject) return;
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const imported = JSON.parse(e.target.result);
-        // Check if valid structure
         if (Array.isArray(imported) && imported[0]?.amount !== undefined) {
-          setExpenses(imported);
+          setProjects(projects.map(p =>
+            p.id === currentProject.id ? { ...p, expenses: imported } : p
+          ));
         } else {
           alert("Invalid JSON structure.");
         }
@@ -151,6 +206,7 @@ export default function App() {
 
   // Export as CSV
   const exportCSV = () => {
+    if (!currentProject) return;
     const header = "Amount,Category,Description,Date\n";
     const rows = expenses
       .map(
@@ -163,32 +219,30 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "expenses.csv";
+    link.download = `${currentProject.name.replace(/\s+/g, "_")}_expenses.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
   // Export as JSON
   const exportJSON = () => {
+    if (!currentProject) return;
     const json = JSON.stringify(expenses, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "expenses.json";
+    link.download = `${currentProject.name.replace(/\s+/g, "_")}_expenses.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
-  // Filter expenses by selected month
+  // --- Monthly filtering, summary, and chart ---
   const filteredExpenses = expenses.filter(
     (exp) => getMonth(new Date(exp.date)) === selectedMonth
   );
-
-  // Calculate summary
   const total = filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0);
 
-  // Pie chart data
   const pieData = {
     labels: categories,
     datasets: [
@@ -210,17 +264,17 @@ export default function App() {
     ],
   };
 
-  // Get unique months for dropdown
   const months = [
     ...new Set(expenses.map((exp) => getMonth(new Date(exp.date)))),
   ]
     .sort()
     .reverse();
 
+  // ---- UI ----
   return (
     <div
       style={{
-        maxWidth: 470,
+        maxWidth: 500,
         margin: "2rem auto",
         padding: 24,
         borderRadius: 16,
@@ -228,204 +282,269 @@ export default function App() {
         boxShadow: "0 4px 16px #0002",
       }}
     >
-    <div style={{ textAlign: "center", marginBottom: 12 }}>
-      <img src="/logo.svg" alt="Expense Tracker Logo" width={60} height={60} />
-    </div>
-      <h2 style={{ textAlign: "center" }}>Expense Tracker</h2>
-      <form onSubmit={addOrEditExpense} style={{ marginBottom: 24 }}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <input
-            type="number"
-            step="0.01"
-            placeholder="Amount"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            required
-            style={{ flex: 1 }}
-          />
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            style={{ flex: 1 }}
-          >
-            {categories.map((cat) => (
-              <option key={cat}>{cat}</option>
-            ))}
-          </select>
-        </div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+      {/* Project Selector & Manager */}
+      <div style={{ marginBottom: 24, display: "flex", alignItems: "center", gap: 10 }}>
+        <form onSubmit={addProject} style={{ flex: "auto", display: "flex", gap: 8 }}>
           <input
             type="text"
-            placeholder="Description"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            style={{ flex: 2 }}
+            placeholder="Add new tracker (e.g. Trip, Event...)"
+            value={newProjectName}
+            onChange={e => setNewProjectName(e.target.value)}
+            style={{ flex: "auto" }}
           />
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            style={{ flex: 1 }}
-          />
-        </div>
-        <button type="submit" style={{ width: "100%", padding: 8 }}>
-          {editingIndex >= 0 ? "Update Expense" : "Add Expense"}
-        </button>
-      </form>
-      <div
-        style={{
-          marginBottom: 16,
-          display: "flex",
-          gap: 8,
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-        }}
-      >
-        <label>
-          Month:{" "}
+          <button type="submit">Add</button>
+        </form>
+        {projects.length > 0 && (
           <select
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
+            value={currentProject ? currentProject.id : ""}
+            onChange={e => setCurrentProjectId(e.target.value)}
+            style={{ minWidth: 120, maxWidth: 200 }}
           >
-            {[getMonth(new Date()), ...months]
-              .filter((m, i, arr) => arr.indexOf(m) === i)
-              .map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
+            {projects.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
           </select>
-        </label>
-        <div>
-          <button
-            onClick={exportCSV}
-            style={{ padding: "4px 8px", fontSize: 14, marginRight: 5 }}
-          >
-            Export CSV
-          </button>
-          <button
-            onClick={exportJSON}
-            style={{ padding: "4px 8px", fontSize: 14, marginRight: 5 }}
-          >
-            Export JSON
-          </button>
-          <label
-            style={{
-              display: "inline-block",
-              padding: "4px 8px",
-              background: "#eee",
-              borderRadius: 4,
-              cursor: "pointer",
-              fontSize: 14,
-              marginRight: 5,
-            }}
-          >
-            Import CSV
-            <input
-              type="file"
-              accept=".csv"
-              style={{ display: "none" }}
-              onChange={importCSV}
-            />
-          </label>
-          <label
-            style={{
-              display: "inline-block",
-              padding: "4px 8px",
-              background: "#eee",
-              borderRadius: 4,
-              cursor: "pointer",
-              fontSize: 14,
-            }}
-          >
-            Import JSON
-            <input
-              type="file"
-              accept=".json"
-              style={{ display: "none" }}
-              onChange={importJSON}
-            />
-          </label>
-        </div>
-      </div>
-      <h3 style={{ textAlign: "center" }}>Total: CHF {total.toFixed(2)}</h3>
-      <Pie data={pieData} style={{ maxHeight: 250, margin: "auto" }} />
-      <h4 style={{ marginTop: 20 }}>Expenses</h4>
-      <ul
-        style={{
-          listStyle: "none",
-          padding: 0,
-          maxHeight: 170,
-          overflowY: "auto",
-        }}
-      >
-        {filteredExpenses.length === 0 && <li>No expenses this month.</li>}
-        {filteredExpenses.map((exp, i) => {
-          // Find index in all expenses, not just filtered
-          const idx = expenses.findIndex(
-            (e) =>
-              e.amount === exp.amount &&
-              e.category === exp.category &&
-              e.description === exp.description &&
-              e.date === exp.date
-          );
-          return (
-            <li
-              key={i}
-              style={{
-                borderBottom: "1px solid #eee",
-                padding: "6px 0",
-                fontSize: 15,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
+        )}
+        {currentProject && (
+          <>
+            <button
+              title="Rename tracker"
+              style={{ background: "#f5f5f5", border: "none", marginLeft: 2, padding: "3px 7px", borderRadius: 4, fontSize: 14 }}
+              onClick={() => {
+                const newName = prompt("Rename tracker:", currentProject.name);
+                if (newName) renameProject(currentProject.id, newName.trim());
               }}
-            >
-              <span>
-                <b>CHF{exp.amount.toFixed(2)}</b> - {exp.category}
-                <br />
-                <span style={{ color: "#555" }}>{exp.description}</span>
-                <span style={{ color: "#888", fontSize: 13, marginLeft: 10 }}>
-                  {exp.date}
+            >✏️</button>
+            <button
+              title="Delete tracker"
+              style={{ background: "#ffeaea", border: "none", marginLeft: 2, padding: "3px 7px", borderRadius: 4, color: "#c00", fontSize: 14 }}
+              onClick={() => deleteProject(currentProject.id)}
+              disabled={projects.length < 2}
+            >🗑️</button>
+          </>
+        )}
+      </div>
+
+      {/* LOGO */}
+      <div style={{ textAlign: "center", marginBottom: 12 }}>
+        <img src="/logo.svg" alt="Expense Tracker Logo" width={60} height={60} />
+      </div>
+
+      <h2 style={{ textAlign: "center" }}>
+        Expense Tracker {currentProject ? `: ${currentProject.name}` : ""}
+      </h2>
+      {projects.length === 0 && (
+        <div style={{ textAlign: "center", color: "#888", margin: "1.5rem 0" }}>
+          Add your first tracker above!
+        </div>
+      )}
+      {projects.length > 0 && (
+        <>
+          {/* Expense Form */}
+          <form onSubmit={addOrEditExpense} style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Amount"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                required
+                style={{ flex: 1 }}
+              />
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                style={{ flex: 1 }}
+              >
+                {categories.map((cat) => (
+                  <option key={cat}>{cat}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <input
+                type="text"
+                placeholder="Description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                style={{ flex: 2 }}
+              />
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                style={{ flex: 1 }}
+              />
+            </div>
+            <button type="submit" style={{ width: "100%", padding: 8 }}>
+              {editingIndex >= 0 ? "Update Expense" : "Add Expense"}
+            </button>
+          </form>
+
+          {/* Month Selector and Import/Export */}
+          <div
+            style={{
+              marginBottom: 16,
+              display: "flex",
+              gap: 8,
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+            }}
+          >
+            <label>
+              Month:{" "}
+              <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+              >
+                {[getMonth(new Date()), ...months]
+                  .filter((m, i, arr) => arr.indexOf(m) === i)
+                  .map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <div>
+              <button
+                onClick={exportCSV}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 14,
+                  marginRight: 5,
+                }}
+              >
+                Export CSV
+              </button>
+              <button
+                onClick={exportJSON}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 14,
+                  marginRight: 5,
+                }}
+              >
+                Export JSON
+              </button>
+              <label
+                style={{
+                  display: "inline-block",
+                  padding: "4px 8px",
+                  background: "#eee",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 14,
+                  marginRight: 5,
+                }}
+              >
+                Import CSV
+                <input
+                  type="file"
+                  accept=".csv"
+                  style={{ display: "none" }}
+                  onChange={importCSV}
+                />
+              </label>
+              <label
+                style={{
+                  display: "inline-block",
+                  padding: "4px 8px",
+                  background: "#eee",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 14,
+                }}
+              >
+                Import JSON
+                <input
+                  type="file"
+                  accept=".json"
+                  style={{ display: "none" }}
+                  onChange={importJSON}
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Summary and Pie Chart */}
+          <h3 style={{ textAlign: "center" }}>Total: CHF {total.toFixed(2)}</h3>
+          <Pie data={pieData} style={{ maxHeight: 250, margin: "auto" }} />
+
+          {/* Expense List */}
+          <h4 style={{ marginTop: 20 }}>Expenses</h4>
+          <ul
+            style={{
+              listStyle: "none",
+              padding: 0,
+              maxHeight: 170,
+              overflowY: "auto",
+            }}
+          >
+            {filteredExpenses.length === 0 && (
+              <li>No expenses this month.</li>
+            )}
+            {filteredExpenses.map((exp, i) => (
+              <li
+                key={i}
+                style={{
+                  borderBottom: "1px solid #eee",
+                  padding: "6px 0",
+                  fontSize: 15,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span>
+                  <b>CHF {exp.amount.toFixed(2)}</b> - {exp.category}
+                  <br />
+                  <span style={{ color: "#555" }}>{exp.description}</span>
+                  <span
+                    style={{ color: "#888", fontSize: 13, marginLeft: 10 }}
+                  >
+                    {exp.date}
+                  </span>
                 </span>
-              </span>
-              <span>
-                <button
-                  style={{
-                    marginLeft: 6,
-                    padding: "2px 7px",
-                    fontSize: 13,
-                    background: "#f0f0f0",
-                    border: "none",
-                    borderRadius: 4,
-                    cursor: "pointer",
-                  }}
-                  onClick={() => startEdit(idx)}
-                  title="Edit"
-                >
-                  ✏️
-                </button>
-                <button
-                  style={{
-                    marginLeft: 6,
-                    padding: "2px 7px",
-                    fontSize: 13,
-                    background: "#ffeaea",
-                    border: "none",
-                    borderRadius: 4,
-                    color: "#c00",
-                    cursor: "pointer",
-                  }}
-                  onClick={() => deleteExpense(idx)}
-                  title="Delete"
-                >
-                  🗑️
-                </button>
-              </span>
-            </li>
-          );
-        })}
-      </ul>
+                <span>
+                  <button
+                    style={{
+                      marginLeft: 6,
+                      padding: "2px 7px",
+                      fontSize: 13,
+                      background: "#f0f0f0",
+                      border: "none",
+                      borderRadius: 4,
+                      cursor: "pointer",
+                    }}
+                    onClick={() => startEdit(i)}
+                    title="Edit"
+                  >
+                    ✏️
+                  </button>
+                  <button
+                    style={{
+                      marginLeft: 6,
+                      padding: "2px 7px",
+                      fontSize: 13,
+                      background: "#ffeaea",
+                      border: "none",
+                      borderRadius: 4,
+                      color: "#c00",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => deleteExpense(i)}
+                    title="Delete"
+                  >
+                    🗑️
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
